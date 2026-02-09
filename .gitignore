@@ -50,3 +50,6 @@ Thumbs.db
 # Data files
 test_results.csv
 all_answers.json
+
+# Versions (optional - uncomment if you want to exclude)
+# versions/

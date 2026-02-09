@@ -27,6 +27,9 @@ if not BOT_TOKEN:
 # ID админа (ваш Telegram ID)
 ADMIN_ID = 101189677
 
+# Версия бота (обновляйте при каждом деплое)
+CURRENT_VERSION = "1.0.0"
+
 # Инициализация бота и диспетчера
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
@@ -44,6 +47,49 @@ def load_questions():
     except json.JSONDecodeError:
         logger.error("Ошибка чтения questions.json!")
         return []
+
+
+# Получение версии из файла
+def get_current_version_info():
+    versions_dir = "versions"
+    if not os.path.exists(versions_dir):
+        return None
+    
+    # Ищем последний файл версии
+    version_files = sorted([f for f in os.listdir(versions_dir) if f.endswith('.json')])
+    if not version_files:
+        return None
+    
+    latest_version_file = os.path.join(versions_dir, version_files[-1])
+    try:
+        with open(latest_version_file, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except:
+        return None
+
+
+# Сохранение версии
+def save_version(version, description):
+    versions_dir = "versions"
+    os.makedirs(versions_dir, exist_ok=True)
+    
+    # Определяем номер версии
+    existing_versions = [f for f in os.listdir(versions_dir) if f.endswith('.json')]
+    version_num = len(existing_versions) + 1
+    
+    version_file = os.path.join(versions_dir, f"v{version_num}.json")
+    
+    data = {
+        "version": version,
+        "date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "commit": os.getenv('GIT_COMMIT', 'unknown')[:7] if os.getenv('GIT_COMMIT') else 'local',
+        "description": description
+    }
+    
+    with open(version_file, 'w', encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    
+    return version_num
 
 
 # Сохранение ответов в CSV
@@ -114,7 +160,8 @@ main_menu = ReplyKeyboardMarkup(
             KeyboardButton(text="ℹ️ О боте")
         ],
         [
-            KeyboardButton(text="🧪 Начать тестирование")
+            KeyboardButton(text="🧪 Начать тестирование"),
+            KeyboardButton(text="📦 Версия бота")
         ]
     ],
     resize_keyboard=True
@@ -171,7 +218,6 @@ def get_question_keyboard(question_num):
         )])
         return InlineKeyboardMarkup(inline_keyboard=keyboard)
     else:
-        # Для текстовых вопросов - только отмена
         return InlineKeyboardMarkup(
             inline_keyboard=[[InlineKeyboardButton(
                 text="❌ Отмена", 
@@ -188,6 +234,29 @@ async def cmd_start(message: types.Message):
         "Нажмите «🧪 Начать тестирование», чтобы пройти опрос.",
         reply_markup=main_menu
     )
+
+
+# Обработчик команды /version
+@dp.message(Command(commands=["version"]))
+async def cmd_version(message: types.Message):
+    version_info = get_current_version_info()
+    
+    if version_info:
+        text = f"📦 **Версия бота: {version_info['version']}**\n\n"
+        text += f"📅 Дата: {version_info['date']}\n"
+        text += f"🔗 Коммит: `{version_info['commit']}`\n\n"
+        text += f"📝 {version_info['description']}"
+    else:
+        text = f"📦 **Версия бота: {CURRENT_VERSION}**\n\n"
+        text += f"📅 Дата: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+    
+    await message.answer(text, parse_mode=ParseMode.MARKDOWN)
+
+
+# Обработчик кнопки "📦 Версия бота"
+@dp.message(F.text == "📦 Версия бота")
+async def show_version(message: types.Message):
+    await cmd_version(message)
 
 
 # Обработчик команды /admin
@@ -217,12 +286,16 @@ async def show_menu(message: types.Message):
 # Обработчик кнопки "ℹ️ О боте"
 @dp.message(F.text == "ℹ️ О боте")
 async def about_bot(message: types.Message):
+    version_info = get_current_version_info()
+    version_text = f"\n📦 Версия: {version_info['version']}" if version_info else ""
+    
     await message.answer(
         "🤖 **Telegram Quiz Bot**\n\n"
         "Функционал:\n"
         "• 🧪 Тестирование с вопросами\n"
         "• 💾 Сохранение ответов\n"
-        "• 🔧 Админ-панель для просмотра ответов\n\n"
+        "• 🔧 Админ-панель для просмотра ответов\n"
+        f"• 📦 Версионирование{version_text}\n\n"
         "Нажмите «🧪 Начать тестирование», чтобы начать!"
     )
 
@@ -247,7 +320,6 @@ async def start_test(message: types.Message, state: FSMContext):
         parse_mode=ParseMode.MARKDOWN
     )
     
-    # Сбрасываем состояние и начинаем с первого вопроса
     await state.update_data(test_answers={})
     await ask_question(message, state, 1)
 
@@ -255,11 +327,9 @@ async def start_test(message: types.Message, state: FSMContext):
 # Функция для отправки вопроса
 async def ask_question(message: types.Message, state: FSMContext, question_num):
     if question_num > len(QUESTIONS):
-        # Тест завершен
         data = await state.get_data()
         answers = data.get('test_answers', {})
         
-        # Сохраняем ответы
         save_to_csv(
             user_id=message.from_user.id,
             username=message.from_user.username or f"user_{message.from_user.id}",
@@ -271,7 +341,6 @@ async def ask_question(message: types.Message, state: FSMContext, question_num):
             answers=answers
         )
         
-        # Уведомляем админа
         try:
             await bot.send_message(
                 ADMIN_ID,
@@ -296,10 +365,8 @@ async def ask_question(message: types.Message, state: FSMContext, question_num):
     q = QUESTIONS[question_num - 1]
     keyboard = get_question_keyboard(question_num)
     
-    # Формируем текст сообщения
     text = f"**Вопрос {question_num} из {len(QUESTIONS)}**\n\n{q['text']}"
     
-    # Проверяем наличие картинки
     image_path = q.get('image', '')
     if image_path and os.path.isfile(image_path):
         try:
@@ -329,7 +396,6 @@ async def process_answer(callback: types.CallbackQuery, state: FSMContext):
         await callback.answer()
         return
     
-    # Парсим ответ: answer_номер_вариант
     parts = callback.data.split('_')
     question_num = int(parts[1])
     answer_num = int(parts[2])
@@ -355,7 +421,6 @@ async def process_answer(callback: types.CallbackQuery, state: FSMContext):
 async def process_text_answer(message: types.Message, state: FSMContext):
     current_state = await state.get_state()
     
-    # Определяем номер вопроса из состояния
     state_map = {
         Test.Q1: 1,
         Test.Q2: 2,
@@ -366,7 +431,6 @@ async def process_text_answer(message: types.Message, state: FSMContext):
     if not question_num:
         return
     
-    # Сохраняем текстовый ответ
     data = await state.get_data()
     answers = data.get('test_answers', {})
     answers[str(question_num)] = message.text
@@ -473,6 +537,7 @@ async def echo_handler(message: types.Message):
 async def main():
     logger.info("Запуск бота...")
     logger.info(f"Загружено вопросов: {len(QUESTIONS)}")
+    logger.info(f"Версия бота: {CURRENT_VERSION}")
     
     try:
         await bot.delete_webhook()
