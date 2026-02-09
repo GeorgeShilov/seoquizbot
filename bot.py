@@ -288,7 +288,6 @@ async def start_test(message: types.Message, state: FSMContext):
         parse_mode=ParseMode.MARKDOWN
     )
     
-    # Сбрасываем состояние и начинаем с первого вопроса
     await state.update_data(test_answers={})
     await state.set_state(Test.Q1)
     await ask_question(message, state, 1)
@@ -297,7 +296,6 @@ async def start_test(message: types.Message, state: FSMContext):
 # Функция для отправки вопроса
 async def ask_question(message: types.Message, state: FSMContext, question_num):
     if question_num > len(QUESTIONS):
-        # Тест завершен
         data = await state.get_data()
         answers = data.get('test_answers', {})
         
@@ -357,7 +355,6 @@ async def ask_question(message: types.Message, state: FSMContext, question_num):
 async def next_question(message, state, current_question_num):
     next_num = current_question_num + 1
     
-    # Устанавливаем следующее состояние
     if next_num == 2:
         await state.set_state(Test.Q2)
     elif next_num == 3:
@@ -366,7 +363,26 @@ async def next_question(message, state, current_question_num):
     await ask_question(message, state, next_num)
 
 
-# Обработчик ОТМЕНЫ теста (callback)
+# ========== CALLBACK ОБРАБОТЧИКИ ==========
+
+# Обработчик админ-кнопок (ПЕРВЫЙ - для admin_* callbacks)
+@dp.callback_query(F.data.startswith("admin_"))
+async def admin_callback(callback: types.CallbackQuery):
+    if callback.from_user.id != ADMIN_ID:
+        await callback.answer("⛔ У вас нет доступа!")
+        return
+    
+    if callback.data == "admin_all":
+        await show_all_answers(callback)
+    elif callback.data == "admin_stats":
+        await show_stats(callback)
+    elif callback.data == "admin_refresh":
+        await cmd_admin(callback.message)
+    
+    await callback.answer()
+
+
+# Обработчик отмены теста
 @dp.callback_query(F.data == "cancel_test")
 async def cancel_test_callback(callback: types.CallbackQuery, state: FSMContext):
     await callback.message.edit_text("Тест отменён.")
@@ -378,20 +394,9 @@ async def cancel_test_callback(callback: types.CallbackQuery, state: FSMContext)
     await callback.answer()
 
 
-# Обработчик ответов на вопросы (выбор) - НЕ УСТАНАВЛИВАЕТ состояние!
-@dp.callback_query()
+# Обработчик ответов на вопросы (answer_*)
+@dp.callback_query(F.data.startswith("answer_"))
 async def process_answer(callback: types.CallbackQuery, state: FSMContext):
-    # Проверяем, не отмена ли это
-    if callback.data == "cancel_test":
-        await cancel_test_callback(callback, state)
-        return
-    
-    # Проверяем, что это ответ на вопрос
-    if not callback.data.startswith("answer_"):
-        await callback.answer()
-        return
-    
-    # Парсим ответ: answer_номер_вариант
     parts = callback.data.split('_')
     question_num = int(parts[1])
     answer_num = int(parts[2])
@@ -408,29 +413,26 @@ async def process_answer(callback: types.CallbackQuery, state: FSMContext):
         f"✅ Ответ принят: **{answer_text}**"
     )
     
-    # Переходим к следующему вопросу
     await next_question(callback.message, state, question_num)
     await callback.answer()
 
 
-# Обработчик ТЕКСТОВЫХ ответов на вопросы (ВСЕГДА работает во время теста!)
+# ========== TEXT ОБРАБОТЧИКИ ==========
+
+# Обработчик ТЕКСТОВЫХ ответов
 @dp.message(F.text)
 async def process_text_answer(message: types.Message, state: FSMContext):
-    # Проверяем, в каком мы состоянии
     current_state = await state.get_state()
     
-    # Если не в состоянии теста - игнорируем
     if current_state is None:
         await echo_handler(message)
         return
     
-    # Проверяем, не отмена ли это
     if message.text == "❌ Отмена теста":
         await message.answer("Тест отменён.", reply_markup=main_menu)
         await state.clear()
         return
     
-    # Определяем номер вопроса из состояния
     state_map = {
         Test.Q1: 1,
         Test.Q2: 2,
@@ -442,7 +444,6 @@ async def process_text_answer(message: types.Message, state: FSMContext):
         await echo_handler(message)
         return
     
-    # Сохраняем текстовый ответ
     data = await state.get_data()
     answers = data.get('test_answers', {})
     answers[str(question_num)] = message.text
@@ -450,47 +451,21 @@ async def process_text_answer(message: types.Message, state: FSMContext):
     
     await message.answer(f"✅ Ответ принят: **{message.text}**", parse_mode=ParseMode.MARKDOWN)
     
-    # Переходим к следующему вопросу
     await next_question(message, state, question_num)
 
 
-# Обработчик отмены теста (text)
-@dp.message(F.text == "❌ Отмена теста")
-async def cancel_test_text(message: types.Message, state: FSMContext):
-    current_state = await state.get_state()
-    if current_state and 'Test:' in str(current_state):
-        await message.answer("Тест отменён.", reply_markup=main_menu)
-        await state.clear()
+# ========== АДМИН ФУНКЦИИ ==========
 
-
-# Обработчик админ-кнопок
-@dp.callback_query()
-async def admin_callback(callback: types.CallbackQuery):
-    if callback.from_user.id != ADMIN_ID:
-        await callback.answer("⛔ У вас нет доступа!")
-        return
-    
-    if callback.data == "admin_all":
-        await show_all_answers(callback.message, callback.from_user.id)
-    elif callback.data == "admin_stats":
-        await show_stats(callback.message)
-    elif callback.data == "admin_refresh":
-        await cmd_admin(callback.message)
-    
-    await callback.answer()
-
-
-# Показать все ответы
-async def show_all_answers(message: types.Message, admin_id):
+async def show_all_answers(callback: types.CallbackQuery):
     try:
         with open('all_answers.json', 'r', encoding='utf-8') as f:
             data = json.load(f)
     except FileNotFoundError:
-        await message.answer("📋 Пока нет ответов.")
+        await callback.message.answer("📋 Пока нет ответов.")
         return
     
     if not data:
-        await message.answer("📋 Пока нет ответов.")
+        await callback.message.answer("📋 Пока нет ответов.")
         return
     
     for user_id, answers_list in data.items():
@@ -514,16 +489,15 @@ async def show_all_answers(message: types.Message, admin_id):
             ]
         )
         
-        await message.answer(text, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
+        await callback.message.answer(text, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
 
 
-# Показать статистику
-async def show_stats(message: types.Message):
+async def show_stats(callback: types.CallbackQuery):
     try:
         with open('all_answers.json', 'r', encoding='utf-8') as f:
             data = json.load(f)
     except FileNotFoundError:
-        await message.answer("📊 Нет данных.")
+        await callback.message.answer("📊 Нет данных.")
         return
     
     total_users = len(data)
@@ -534,7 +508,7 @@ async def show_stats(message: types.Message):
     text += f"💬 Ответов админа: {answered}\n"
     text += f"⏳ Ожидают ответа: {total_users - answered}\n"
     
-    await message.answer(text, parse_mode=ParseMode.MARKDOWN)
+    await callback.message.answer(text, parse_mode=ParseMode.MARKDOWN)
 
 
 # Обработчик любых других сообщений
