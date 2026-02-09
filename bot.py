@@ -382,7 +382,11 @@ async def show_confirmation(message: types.Message, state: FSMContext, question_
         2: Test.ConfirmQ2,
         3: Test.ConfirmQ3
     }
-    await state.update_data(current_answer=user_answer, current_question=question_num)
+    await state.update_data(
+        current_answer=user_answer, 
+        current_question=question_num,
+        chat_id=message.chat.id
+    )
     await state.set_state(confirm_state_map[question_num])
 
 
@@ -465,6 +469,7 @@ async def confirm_answer(callback: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
     user_answer = data.get('current_answer', '')
     question_num = data.get('current_question', 1)
+    chat_id = data.get('chat_id', callback.message.chat.id)
     
     if callback.data == "confirm_yes":
         # Подтверждено - сохраняем ответ
@@ -472,13 +477,33 @@ async def confirm_answer(callback: types.CallbackQuery, state: FSMContext):
         answers[str(question_num)] = user_answer
         await state.update_data(test_answers=answers)
         
-        await callback.message.edit_text(
-            f"✅ Ответ подтверждён и сохранён: **{user_answer}**"
+        # Удаляем сообщение с подтверждением
+        await callback.message.delete()
+        
+        # Отправляем подтверждение и переходим к следующему вопросу
+        await bot.send_message(
+            chat_id,
+            f"✅ Ответ подтверждён и сохранён: **{user_answer}**",
+            parse_mode=ParseMode.MARKDOWN
         )
-        await next_question(callback.message, state, question_num)
+        
+        # Переходим к следующему вопросу
+        next_num = question_num + 1
+        if next_num == 2:
+            await state.set_state(Test.Q2)
+        elif next_num == 3:
+            await state.set_state(Test.Q3)
+        
+        await ask_question(callback.message, state, next_num)
     else:
         # Не подтверждено - возвращаем к вопросу
-        await callback.message.edit_text("🔄 Введите ответ заново:")
+        await callback.message.delete()
+        
+        # Спрашиваем новый ответ
+        await bot.send_message(
+            chat_id,
+            "🔄 Введите ответ заново:"
+        )
         
         # Возвращаем в состояние вопроса
         state_map = {
