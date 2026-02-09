@@ -462,7 +462,10 @@ async def process_answer(callback: types.CallbackQuery, state: FSMContext):
 async def confirm_answer(callback: types.CallbackQuery, state: FSMContext):
     current_state = await state.get_state()
     
-    if not current_state or not current_state.startswith("Test:Test.Confirm"):
+    logger.info(f"confirm_answer вызван, state: {current_state}, data: {callback.data}")
+    
+    if not current_state or not current_state.startswith("Test:Confirm"):
+        logger.info(f"Состояние не подходит для подтверждения: {current_state}")
         await callback.answer()
         return
     
@@ -472,15 +475,20 @@ async def confirm_answer(callback: types.CallbackQuery, state: FSMContext):
     chat_id = data.get('chat_id', callback.message.chat.id)
     
     if callback.data == "confirm_yes":
+        logger.info(f"Нажата кнопка Да, сохраняем ответ: {user_answer}")
+        
         # Подтверждено - сохраняем ответ
         answers = data.get('test_answers', {})
         answers[str(question_num)] = user_answer
         await state.update_data(test_answers=answers)
         
         # Удаляем сообщение с подтверждением
-        await callback.message.delete()
+        try:
+            await callback.message.delete()
+        except Exception as e:
+            logger.error(f"Не удалось удалить сообщение: {e}")
         
-        # Отправляем подтверждение и переходим к следующему вопросу
+        # Отправляем подтверждение
         await bot.send_message(
             chat_id,
             f"✅ Ответ подтверждён и сохранён: **{user_answer}**",
@@ -496,8 +504,13 @@ async def confirm_answer(callback: types.CallbackQuery, state: FSMContext):
         
         await ask_question(callback.message, state, next_num)
     else:
+        logger.info("Нажата кнопка Нет, просим ввести заново")
+        
         # Не подтверждено - возвращаем к вопросу
-        await callback.message.delete()
+        try:
+            await callback.message.delete()
+        except Exception as e:
+            logger.error(f"Не удалось удалить сообщение: {e}")
         
         # Спрашиваем новый ответ
         await bot.send_message(
@@ -506,12 +519,12 @@ async def confirm_answer(callback: types.CallbackQuery, state: FSMContext):
         )
         
         # Возвращаем в состояние вопроса
-        state_map = {
-            "Test:Test.ConfirmQ1": Test.Q1,
-            "Test:Test.ConfirmQ2": Test.Q2,
-            "Test:Test.ConfirmQ3": Test.Q3
-        }
-        await state.set_state(state_map.get(current_state, Test.Q1))
+        if current_state == "Test:ConfirmQ1":
+            await state.set_state(Test.Q1)
+        elif current_state == "Test:ConfirmQ2":
+            await state.set_state(Test.Q2)
+        elif current_state == "Test:ConfirmQ3":
+            await state.set_state(Test.Q3)
     
     await callback.answer()
 
