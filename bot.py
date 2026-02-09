@@ -27,7 +27,7 @@ if not BOT_TOKEN:
 # ID админа (ваш Telegram ID)
 ADMIN_ID = 101189677
 
-# Версия бота (обновляйте при каждом деплое)
+# Версия бота
 CURRENT_VERSION = "1.0.0"
 
 # Инициализация бота и диспетчера
@@ -55,7 +55,6 @@ def get_current_version_info():
     if not os.path.exists(versions_dir):
         return None
     
-    # Ищем последний файл версии
     version_files = sorted([f for f in os.listdir(versions_dir) if f.endswith('.json')])
     if not version_files:
         return None
@@ -66,30 +65,6 @@ def get_current_version_info():
             return json.load(f)
     except:
         return None
-
-
-# Сохранение версии
-def save_version(version, description):
-    versions_dir = "versions"
-    os.makedirs(versions_dir, exist_ok=True)
-    
-    # Определяем номер версии
-    existing_versions = [f for f in os.listdir(versions_dir) if f.endswith('.json')]
-    version_num = len(existing_versions) + 1
-    
-    version_file = os.path.join(versions_dir, f"v{version_num}.json")
-    
-    data = {
-        "version": version,
-        "date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "commit": os.getenv('GIT_COMMIT', 'unknown')[:7] if os.getenv('GIT_COMMIT') else 'local',
-        "description": description
-    }
-    
-    with open(version_file, 'w', encoding='utf-8') as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-    
-    return version_num
 
 
 # Сохранение ответов в CSV
@@ -105,8 +80,6 @@ def save_to_csv(user_id, username, answers):
         for q_id in range(1, 4):
             row.append(answers.get(str(q_id), ""))
         writer.writerow(row)
-    
-    logger.info(f"Результат сохранен для user_id: {user_id}")
 
 
 # Сохранение всех ответов в JSON для админ-панели
@@ -140,12 +113,6 @@ class Test(StatesGroup):
     Q1 = State()
     Q2 = State()
     Q3 = State()
-
-
-# Состояния для админа
-class Admin(StatesGroup):
-    viewing_answers = State()
-    waiting_for_response = State()
 
 
 # Загружаем вопросы
@@ -218,6 +185,7 @@ def get_question_keyboard(question_num):
         )])
         return InlineKeyboardMarkup(inline_keyboard=keyboard)
     else:
+        # Для текстовых вопросов - кнопка отмены
         return InlineKeyboardMarkup(
             inline_keyboard=[[InlineKeyboardButton(
                 text="❌ Отмена", 
@@ -294,8 +262,8 @@ async def about_bot(message: types.Message):
         "Функционал:\n"
         "• 🧪 Тестирование с вопросами\n"
         "• 💾 Сохранение ответов\n"
-        "• 🔧 Админ-панель для просмотра ответов\n"
-        f"• 📦 Версионирование{version_text}\n\n"
+        "• 🔧 Админ-панель\n\n"
+        f"📦 Версия{version_text}\n\n"
         "Нажмите «🧪 Начать тестирование», чтобы начать!"
     )
 
@@ -312,7 +280,7 @@ async def start_test(message: types.Message, state: FSMContext):
     await message.answer(
         "🧪 **Тестирование началось!**\n\n"
         f"Всего вопросов: {len(QUESTIONS)}\n"
-        "Отвечайте на вопросы.",
+        "Отвечайте на вопросы текстом или выбирайте варианты.",
         reply_markup=ReplyKeyboardMarkup(
             keyboard=[[KeyboardButton(text="❌ Отмена теста")]],
             resize_keyboard=True
@@ -320,13 +288,16 @@ async def start_test(message: types.Message, state: FSMContext):
         parse_mode=ParseMode.MARKDOWN
     )
     
+    # Сбрасываем состояние и начинаем с первого вопроса
     await state.update_data(test_answers={})
+    await state.set_state(Test.Q1)
     await ask_question(message, state, 1)
 
 
 # Функция для отправки вопроса
 async def ask_question(message: types.Message, state: FSMContext, question_num):
     if question_num > len(QUESTIONS):
+        # Тест завершен
         data = await state.get_data()
         answers = data.get('test_answers', {})
         
@@ -346,8 +317,7 @@ async def ask_question(message: types.Message, state: FSMContext, question_num):
                 ADMIN_ID,
                 f"🔔 **Новый ответ на тест!**\n\n"
                 f"Пользователь: @{message.from_user.username or message.from_user.id}\n"
-                f"ID: {message.from_user.id}\n\n"
-                f"📊 Ответы сохранены. Проверьте в админ-панели.",
+                f"ID: {message.from_user.id}",
                 parse_mode=ParseMode.MARKDOWN
             )
         except Exception as e:
@@ -355,7 +325,7 @@ async def ask_question(message: types.Message, state: FSMContext, question_num):
         
         await message.answer(
             "✅ **Тест завершен!**\n\n"
-            "Спасибо за участие! Ваши ответы сохранены.",
+            "Спасибо за участие!",
             reply_markup=main_menu,
             parse_mode=ParseMode.MARKDOWN
         )
@@ -383,19 +353,45 @@ async def ask_question(message: types.Message, state: FSMContext, question_num):
     await message.answer(text, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
 
 
-# Обработчик ответов на вопросы (выбор)
-@dp.callback_query(StateFilter(Test.Q1, Test.Q2, Test.Q3))
+# Переход к следующему вопросу
+async def next_question(message, state, current_question_num):
+    next_num = current_question_num + 1
+    
+    # Устанавливаем следующее состояние
+    if next_num == 2:
+        await state.set_state(Test.Q2)
+    elif next_num == 3:
+        await state.set_state(Test.Q3)
+    
+    await ask_question(message, state, next_num)
+
+
+# Обработчик ОТМЕНЫ теста (callback)
+@dp.callback_query(F.data == "cancel_test")
+async def cancel_test_callback(callback: types.CallbackQuery, state: FSMContext):
+    await callback.message.edit_text("Тест отменён.")
+    await callback.message.answer(
+        "Вернуться в главное меню:",
+        reply_markup=main_menu
+    )
+    await state.clear()
+    await callback.answer()
+
+
+# Обработчик ответов на вопросы (выбор) - НЕ УСТАНАВЛИВАЕТ состояние!
+@dp.callback_query()
 async def process_answer(callback: types.CallbackQuery, state: FSMContext):
+    # Проверяем, не отмена ли это
     if callback.data == "cancel_test":
-        await callback.message.edit_text("Тест отменён.")
-        await callback.message.answer(
-            "Вернуться в главное меню:",
-            reply_markup=main_menu
-        )
-        await state.clear()
+        await cancel_test_callback(callback, state)
+        return
+    
+    # Проверяем, что это ответ на вопрос
+    if not callback.data.startswith("answer_"):
         await callback.answer()
         return
     
+    # Парсим ответ: answer_номер_вариант
     parts = callback.data.split('_')
     question_num = int(parts[1])
     answer_num = int(parts[2])
@@ -412,15 +408,29 @@ async def process_answer(callback: types.CallbackQuery, state: FSMContext):
         f"✅ Ответ принят: **{answer_text}**"
     )
     
-    await ask_question(callback.message, state, question_num + 1)
+    # Переходим к следующему вопросу
+    await next_question(callback.message, state, question_num)
     await callback.answer()
 
 
-# Обработчик ТЕКСТОВЫХ ответов на вопросы
-@dp.message(StateFilter(Test.Q1, Test.Q2, Test.Q3))
+# Обработчик ТЕКСТОВЫХ ответов на вопросы (ВСЕГДА работает во время теста!)
+@dp.message(F.text)
 async def process_text_answer(message: types.Message, state: FSMContext):
+    # Проверяем, в каком мы состоянии
     current_state = await state.get_state()
     
+    # Если не в состоянии теста - игнорируем
+    if current_state is None:
+        await echo_handler(message)
+        return
+    
+    # Проверяем, не отмена ли это
+    if message.text == "❌ Отмена теста":
+        await message.answer("Тест отменён.", reply_markup=main_menu)
+        await state.clear()
+        return
+    
+    # Определяем номер вопроса из состояния
     state_map = {
         Test.Q1: 1,
         Test.Q2: 2,
@@ -429,8 +439,10 @@ async def process_text_answer(message: types.Message, state: FSMContext):
     question_num = state_map.get(current_state)
     
     if not question_num:
+        await echo_handler(message)
         return
     
+    # Сохраняем текстовый ответ
     data = await state.get_data()
     answers = data.get('test_answers', {})
     answers[str(question_num)] = message.text
@@ -438,12 +450,13 @@ async def process_text_answer(message: types.Message, state: FSMContext):
     
     await message.answer(f"✅ Ответ принят: **{message.text}**", parse_mode=ParseMode.MARKDOWN)
     
-    await ask_question(message, state, question_num + 1)
+    # Переходим к следующему вопросу
+    await next_question(message, state, question_num)
 
 
-# Обработчик отмены теста
+# Обработчик отмены теста (text)
 @dp.message(F.text == "❌ Отмена теста")
-async def cancel_test(message: types.Message, state: FSMContext):
+async def cancel_test_text(message: types.Message, state: FSMContext):
     current_state = await state.get_state()
     if current_state and 'Test:' in str(current_state):
         await message.answer("Тест отменён.", reply_markup=main_menu)
