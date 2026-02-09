@@ -28,7 +28,7 @@ if not BOT_TOKEN:
 ADMIN_ID = 101189677
 
 # Версия бота
-CURRENT_VERSION = "1.0.0"
+CURRENT_VERSION = "1.1.0"
 
 # Инициализация бота и диспетчера
 bot = Bot(token=BOT_TOKEN)
@@ -108,11 +108,15 @@ def save_all_answers(user_id, username, answers):
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 
-# Определение состояний для Теста
+# Определение состояний для Теста (с подтверждением)
 class Test(StatesGroup):
     Q1 = State()
     Q2 = State()
     Q3 = State()
+    # Состояния для подтверждения
+    ConfirmQ1 = State()
+    ConfirmQ2 = State()
+    ConfirmQ3 = State()
 
 
 # Загружаем вопросы
@@ -161,6 +165,17 @@ inline_menu = InlineKeyboardMarkup(
         ],
         [
             InlineKeyboardButton(text="⬅️ Назад", callback_data="back")
+        ]
+    ]
+)
+
+
+# Клавиатура подтверждения Да/Нет
+confirm_keyboard = InlineKeyboardMarkup(
+    inline_keyboard=[
+        [
+            InlineKeyboardButton(text="✅ Да", callback_data="confirm_yes"),
+            InlineKeyboardButton(text="🔄 Нет", callback_data="confirm_no")
         ]
     ]
 )
@@ -280,7 +295,7 @@ async def start_test(message: types.Message, state: FSMContext):
     await message.answer(
         "🧪 **Тестирование началось!**\n\n"
         f"Всего вопросов: {len(QUESTIONS)}\n"
-        "Отвечайте на вопросы текстом или выбирайте варианты.",
+        "После каждого ответа нужно будет подтвердить его.",
         reply_markup=ReplyKeyboardMarkup(
             keyboard=[[KeyboardButton(text="❌ Отмена теста")]],
             resize_keyboard=True
@@ -351,6 +366,26 @@ async def ask_question(message: types.Message, state: FSMContext, question_num):
     await message.answer(text, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
 
 
+# Функция для показа подтверждения
+async def show_confirmation(message: types.Message, state: FSMContext, question_num, user_answer):
+    """Показывает ответ пользователя с кнопками подтверждения"""
+    await message.answer(
+        f"📝 **Ваш ответ:**\n\n{user_answer}\n\n"
+        f"Уверены в этом ответе?",
+        reply_markup=confirm_keyboard,
+        parse_mode=ParseMode.MARKDOWN
+    )
+    
+    # Сохраняем временный ответ в состояние
+    confirm_state_map = {
+        1: Test.ConfirmQ1,
+        2: Test.ConfirmQ2,
+        3: Test.ConfirmQ3
+    }
+    await state.update_data(current_answer=user_answer, current_question=question_num)
+    await state.set_state(confirm_state_map[question_num])
+
+
 # Переход к следующему вопросу
 async def next_question(message, state, current_question_num):
     next_num = current_question_num + 1
@@ -394,7 +429,7 @@ async def cancel_test_callback(callback: types.CallbackQuery, state: FSMContext)
     await callback.answer()
 
 
-# Обработчик ответов на вопросы (answer_*)
+# Обработчик ответов на вопросы (answer_* - для вариантных ответов)
 @dp.callback_query(F.data.startswith("answer_"))
 async def process_answer(callback: types.CallbackQuery, state: FSMContext):
     parts = callback.data.split('_')
@@ -404,6 +439,7 @@ async def process_answer(callback: types.CallbackQuery, state: FSMContext):
     q = QUESTIONS[question_num - 1]
     answer_text = q['options'][answer_num]
     
+    # Сразу сохраняем вариантный ответ (он уже выбран)
     data = await state.get_data()
     answers = data.get('test_answers', {})
     answers[str(question_num)] = answer_text
@@ -414,6 +450,44 @@ async def process_answer(callback: types.CallbackQuery, state: FSMContext):
     )
     
     await next_question(callback.message, state, question_num)
+    await callback.answer()
+
+
+# Обработчик подтверждения ответа (Да/Нет)
+@dp.callback_query(F.data.startswith("confirm_"))
+async def confirm_answer(callback: types.CallbackQuery, state: FSMContext):
+    current_state = await state.get_state()
+    
+    if not current_state or not current_state.startswith("Test:Test.Confirm"):
+        await callback.answer()
+        return
+    
+    data = await state.get_data()
+    user_answer = data.get('current_answer', '')
+    question_num = data.get('current_question', 1)
+    
+    if callback.data == "confirm_yes":
+        # Подтверждено - сохраняем ответ
+        answers = data.get('test_answers', {})
+        answers[str(question_num)] = user_answer
+        await state.update_data(test_answers=answers)
+        
+        await callback.message.edit_text(
+            f"✅ Ответ подтверждён и сохранён: **{user_answer}**"
+        )
+        await next_question(callback.message, state, question_num)
+    else:
+        # Не подтверждено - возвращаем к вопросу
+        await callback.message.edit_text("🔄 Введите ответ заново:")
+        
+        # Возвращаем в состояние вопроса
+        state_map = {
+            "Test:Test.ConfirmQ1": Test.Q1,
+            "Test:Test.ConfirmQ2": Test.Q2,
+            "Test:Test.ConfirmQ3": Test.Q3
+        }
+        await state.set_state(state_map.get(current_state, Test.Q1))
+    
     await callback.answer()
 
 
@@ -444,14 +518,8 @@ async def process_text_answer(message: types.Message, state: FSMContext):
         await echo_handler(message)
         return
     
-    data = await state.get_data()
-    answers = data.get('test_answers', {})
-    answers[str(question_num)] = message.text
-    await state.update_data(test_answers=answers)
-    
-    await message.answer(f"✅ Ответ принят: **{message.text}**", parse_mode=ParseMode.MARKDOWN)
-    
-    await next_question(message, state, question_num)
+    # Показываем подтверждение вместо сразу сохранения
+    await show_confirmation(message, state, question_num, message.text)
 
 
 # ========== АДМИН ФУНКЦИИ ==========
