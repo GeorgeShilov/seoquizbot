@@ -54,9 +54,9 @@ def save_to_csv(user_id, username, answers):
     with open(csv_file, 'a', newline='', encoding='utf-8') as f:
         writer = csv.writer(f)
         if not file_exists:
-            writer.writerow(["user_id", "username", "timestamp", "Q1", "Q2", "Q3", "Q4", "Q5"])
+            writer.writerow(["user_id", "username", "timestamp", "Q1", "Q2", "Q3"])
         row = [user_id, username, datetime.now().strftime("%Y-%m-%d %H:%M:%S")]
-        for q_id in range(1, 6):
+        for q_id in range(1, 4):
             row.append(answers.get(str(q_id), ""))
         writer.writerow(row)
     
@@ -94,8 +94,6 @@ class Test(StatesGroup):
     Q1 = State()
     Q2 = State()
     Q3 = State()
-    Q4 = State()
-    Q5 = State()
 
 
 # Состояния для админа
@@ -162,7 +160,7 @@ def get_question_keyboard(question_num):
     q = QUESTIONS[question_num - 1]
     if q['type'] == 'choice':
         keyboard = []
-        for i, option in enumerate(q['options']):
+        for i, option in enumerate(q.get('options', [])):
             keyboard.append([InlineKeyboardButton(
                 text=option, 
                 callback_data=f"answer_{question_num}_{i}"
@@ -222,7 +220,7 @@ async def about_bot(message: types.Message):
     await message.answer(
         "🤖 **Telegram Quiz Bot**\n\n"
         "Функционал:\n"
-        "• 🧪 Тестирование с вопросами и картинками\n"
+        "• 🧪 Тестирование с вопросами\n"
         "• 💾 Сохранение ответов\n"
         "• 🔧 Админ-панель для просмотра ответов\n\n"
         "Нажмите «🧪 Начать тестирование», чтобы начать!"
@@ -241,7 +239,7 @@ async def start_test(message: types.Message, state: FSMContext):
     await message.answer(
         "🧪 **Тестирование началось!**\n\n"
         f"Всего вопросов: {len(QUESTIONS)}\n"
-        "Отвечайте на вопросы, выбирая варианты из списка.",
+        "Отвечайте на вопросы.",
         reply_markup=ReplyKeyboardMarkup(
             keyboard=[[KeyboardButton(text="❌ Отмена теста")]],
             resize_keyboard=True
@@ -254,7 +252,7 @@ async def start_test(message: types.Message, state: FSMContext):
     await ask_question(message, state, 1)
 
 
-# Функция для отправки вопроса с картинкой
+# Функция для отправки вопроса
 async def ask_question(message: types.Message, state: FSMContext, question_num):
     if question_num > len(QUESTIONS):
         # Тест завершен
@@ -304,7 +302,6 @@ async def ask_question(message: types.Message, state: FSMContext, question_num):
     # Проверяем наличие картинки
     image_path = q.get('image', '')
     if image_path and os.path.isfile(image_path):
-        # Локальный файл
         try:
             await message.answer_photo(
                 photo=InputFile(image_path),
@@ -316,12 +313,11 @@ async def ask_question(message: types.Message, state: FSMContext, question_num):
         except Exception as e:
             logger.error(f"Ошибка отправки картинки: {e}")
     
-    # Если картинки нет или ошибка - отправляем только текст
     await message.answer(text, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
 
 
-# Обработчик ответов на вопросы
-@dp.callback_query(StateFilter(Test.Q1, Test.Q2, Test.Q3, Test.Q4, Test.Q5))
+# Обработчик ответов на вопросы (выбор)
+@dp.callback_query(StateFilter(Test.Q1, Test.Q2, Test.Q3))
 async def process_answer(callback: types.CallbackQuery, state: FSMContext):
     if callback.data == "cancel_test":
         await callback.message.edit_text("Тест отменён.")
@@ -341,7 +337,6 @@ async def process_answer(callback: types.CallbackQuery, state: FSMContext):
     q = QUESTIONS[question_num - 1]
     answer_text = q['options'][answer_num]
     
-    # Сохраняем ответ
     data = await state.get_data()
     answers = data.get('test_answers', {})
     answers[str(question_num)] = answer_text
@@ -351,13 +346,12 @@ async def process_answer(callback: types.CallbackQuery, state: FSMContext):
         f"✅ Ответ принят: **{answer_text}**"
     )
     
-    # Переходим к следующему вопросу
     await ask_question(callback.message, state, question_num + 1)
     await callback.answer()
 
 
-# Обработчик текстовых ответов на вопросы
-@dp.message(StateFilter(Test.Q1, Test.Q2, Test.Q3, Test.Q4, Test.Q5))
+# Обработчик ТЕКСТОВЫХ ответов на вопросы
+@dp.message(StateFilter(Test.Q1, Test.Q2, Test.Q3))
 async def process_text_answer(message: types.Message, state: FSMContext):
     current_state = await state.get_state()
     
@@ -365,9 +359,7 @@ async def process_text_answer(message: types.Message, state: FSMContext):
     state_map = {
         Test.Q1: 1,
         Test.Q2: 2,
-        Test.Q3: 3,
-        Test.Q4: 4,
-        Test.Q5: 5
+        Test.Q3: 3
     }
     question_num = state_map.get(current_state)
     
@@ -382,7 +374,6 @@ async def process_text_answer(message: types.Message, state: FSMContext):
     
     await message.answer(f"✅ Ответ принят: **{message.text}**", parse_mode=ParseMode.MARKDOWN)
     
-    # Переходим к следующему вопросу
     await ask_question(message, state, question_num + 1)
 
 
@@ -408,11 +399,6 @@ async def admin_callback(callback: types.CallbackQuery):
         await show_stats(callback.message)
     elif callback.data == "admin_refresh":
         await cmd_admin(callback.message)
-    elif callback.data.startswith("respond_"):
-        user_id = callback.data.split("_")[1]
-        await start_response(callback.message, user_id, callback.from_user.id)
-    elif callback.data == "admin_back":
-        await cmd_admin(callback.message)
     
     await callback.answer()
 
@@ -430,28 +416,18 @@ async def show_all_answers(message: types.Message, admin_id):
         await message.answer("📋 Пока нет ответов.")
         return
     
-    text = f"**📋 Все ответы ({len(data)} пользователей)**\n\n"
-    
     for user_id, answers_list in data.items():
         latest = answers_list[-1]
         username = latest['username']
         timestamp = latest['timestamp']
-        has_response = latest.get('admin_response') is not None
         
-        text += f"**ID:** {user_id}\n"
+        text = f"**📋 Ответ пользователя {user_id}**\n\n"
         text += f"**Пользователь:** @{username}\n"
-        text += f"**Время:** {timestamp}\n"
-        text += f"**Ответы:**\n"
+        text += f"**Время:** {timestamp}\n\n"
         
         for q_num, answer in latest['answers'].items():
-            text += f"  • Вопрос {q_num}: {answer}\n"
+            text += f"**Вопрос {q_num}:** {answer}\n\n"
         
-        if has_response:
-            text += f"✅ Есть ответ админа\n\n"
-        else:
-            text += f"❌ Нет ответа\n\n"
-        
-        # Кнопка для ответа
         keyboard = InlineKeyboardMarkup(
             inline_keyboard=[
                 [InlineKeyboardButton(
@@ -461,17 +437,7 @@ async def show_all_answers(message: types.Message, admin_id):
             ]
         )
         
-        # Отправляем по частям, если слишком длинно
-        if len(text) > 3000:
-            await message.answer(text[:3000] + "...", parse_mode=ParseMode.MARKDOWN)
-            text = text[3000:]
-        
-        await message.answer(
-            text if len(text) < 4000 else text[:4000] + "...",
-            reply_markup=keyboard,
-            parse_mode=ParseMode.MARKDOWN
-        )
-        text = ""
+        await message.answer(text, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
 
 
 # Показать статистику
@@ -484,27 +450,14 @@ async def show_stats(message: types.Message):
         return
     
     total_users = len(data)
-    total_responses = sum(len(answers) for answers in data.values())
     answered = sum(1 for answers in data.values() if answers[-1].get('admin_response'))
     
     text = f"**📊 Статистика**\n\n"
     text += f"👥 Всего пользователей: {total_users}\n"
-    text += f"📝 Всего ответов: {total_responses}\n"
     text += f"💬 Ответов админа: {answered}\n"
     text += f"⏳ Ожидают ответа: {total_users - answered}\n"
     
     await message.answer(text, parse_mode=ParseMode.MARKDOWN)
-
-
-# Начать ответ пользователю
-async def start_response(message: types.Message, user_id, admin_id):
-    await message.answer(
-        f"**💬 Ответ пользователю {user_id}**\n\n"
-        f"Введите ваше сообщение:",
-        parse_mode=ParseMode.MARKDOWN
-    )
-    # Здесь можно добавить FSM для ввода ответа
-    # Пока просто сохраним, что нужно ответить
 
 
 # Обработчик любых других сообщений
@@ -521,7 +474,6 @@ async def main():
     logger.info("Запуск бота...")
     logger.info(f"Загружено вопросов: {len(QUESTIONS)}")
     
-    # Удаляем webhook, если есть
     try:
         await bot.delete_webhook()
     except Exception as e:
